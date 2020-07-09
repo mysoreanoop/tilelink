@@ -4,7 +4,7 @@ import sbt.complete.DefaultParsers._
 import scala.sys.process._
 
 lazy val commonSettings = Seq(
-  organization := "Morphing Machines Pvt. Ltd.",
+  organization := "Nil"
   version      := "0.0",
   scalaVersion := "2.12.10",
   parallelExecution in Global := false,
