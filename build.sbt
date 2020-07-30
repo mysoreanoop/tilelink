@@ -19,23 +19,22 @@ lazy val commonSettings = Seq(
     Resolver.sonatypeRepo("releases")
   )
 )
+logBuffered in Test := false
 
 //lazy val chisel = (project in file("rocket-chip/chisel3")).settings(commonSettings)
 
 def dependOnChisel(prj: Project) = {
-  //if (sys.props.contains("ROCKET_USE_MAVEN")) {
-    prj.settings(
-      libraryDependencies ++= Seq("edu.berkeley.cs" %% "chisel3" % "3.3-SNAPSHOT")
-    )
-  //} else {
-  //  prj.dependsOn(chisel)
-  //}
+  prj.settings(
+    libraryDependencies ++= Seq("edu.berkeley.cs" %% "chisel3" % "3.3-SNAPSHOT")
+  )
 }
 
 lazy val `api-config-chipsalliance` = (project in file("rocket-chip/api-config-chipsalliance/build-rules/sbt"))
   .settings(commonSettings)
 lazy val hardfloat  = dependOnChisel(project in file("rocket-chip/hardfloat")).settings(commonSettings)
+
 lazy val `rocket-macros` = (project in file("rocket-chip/macros")).settings(commonSettings)
+
 lazy val rocketchip = dependOnChisel(project in file("rocket-chip"))
   .settings(commonSettings)
   .dependsOn(`api-config-chipsalliance` % "compile-internal;test-internal")
