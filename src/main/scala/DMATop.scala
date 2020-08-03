@@ -69,6 +69,7 @@ class CSRBundle(implicit p: Parameters) extends Bundle {
 }
 
 class DMA(implicit p: Parameters) extends LazyModule {
+<<<<<<< Updated upstream
   val size = p(DSMKey).dsmSize
 //  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
 //    name = "dmaSlaveToNoC",
@@ -79,6 +80,18 @@ class DMA(implicit p: Parameters) extends LazyModule {
   val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
     name = "dmaSlaveToDSM",
     sourceId = IdRange(0, 64),
+=======
+  val size = p(DMAKey).dsmSize
+  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
+    name = "dmaSlaveToNoC",
+    sourceId = IdRange(0, 256),
+    requestFifo = true,
+    visibility = Seq(AddressSet(0x0, 0xffff))))
+
+  val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
+    name = "dmaSlaveToDSM",
+    sourceId = IdRange(0, 256),
+>>>>>>> Stashed changes
     requestFifo = true,
     visibility = Seq(AddressSet(0x0, 0xffffff))))
   
@@ -96,6 +109,7 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   })
   
   val cmd = Queue(io.in,  p(DMAKey).nOutstanding) //pipe, flow TODO
+<<<<<<< Updated upstream
   cmd.ready := false.B
 
   val sAddr = Module(new AddressGenerator).io
@@ -112,10 +126,45 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   val nIds = RegInit(0.U(6.W))
 //  when(dsm.d.fire()) { dIds := dIds + 1.U }
 //   nIds := nIds + 1.U 
+=======
+  cmd.ready := true.B
+  val sAddr = Module(new AddressGenerator).io
+  val dAddr = Module(new AddressGenerator).io
+  sAddr.cmd.valid := cmd.valid
+  sAddr.cmd.bits := cmd.bits.src
+  dAddr.cmd.valid := cmd.valid
+  dAddr.cmd.bits := cmd.bits.dest
+
+  val dIds = RegInit(0.U(8.W))
+  val nIds = RegInit(0.U(8.W))
+   dIds := dIds + 1.U  //TODO show some frugality, dammit!
+   nIds := nIds + 1.U 
+  
+  val z = RegInit(0.U(8.W))
+  z := z + 1.U
+  when(z < 255.U) {
+    noc.a.valid := true.B
+    noc.a.bits := nocEdge.Put(fromSource = nIds, 
+      toAddress = z*4.U, lgSize = 1.U,
+      data = VecInit(Seq.fill(4)(z)).asUInt, mask = 15.U)._2
+    noc.d.ready := true.B
+    dsm.a.valid := true.B
+    dsm.a.bits := dsmEdge.Put(fromSource = dIds, 
+      toAddress = z*4.U, lgSize = 1.U,
+      data = VecInit(Seq.fill(4)(z)).asUInt, mask = 15.U)._2
+    dsm.d.ready := true.B
+  }
+
+>>>>>>> Stashed changes
 ////
   val queue = Module(new Queue(UInt(256.W), 32, true, true)).io
 //  queue1.enq.valid := false.B
 //  queue1.deq.ready := false.B
+<<<<<<< Updated upstream
+=======
+  queue.enq.valid := false.B
+  queue.deq.ready := false.B
+>>>>>>> Stashed changes
   
   queue.enq.valid := dsm.d.valid
   dsm.d.ready := queue.enq.ready
@@ -217,7 +266,7 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 //    dsm.d.ready := true.B
 //  }
   
-  //cmd.ready := dAddr.last
+  cmd.ready := dAddr.last
   io.status.bits := 0.U//cmd.bits.txnId
   io.status.valid := false.B//dAddr.last
 
