@@ -70,6 +70,7 @@ class CSRBundle(implicit p: Parameters) extends Bundle {
 
 class DMA(implicit p: Parameters) extends LazyModule {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   val size = p(DSMKey).dsmSize
 //  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
 //    name = "dmaSlaveToNoC",
@@ -84,6 +85,17 @@ class DMA(implicit p: Parameters) extends LazyModule {
   val size = p(DMAKey).dsmSize
   val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
     name = "dmaSlaveToNoC",
+=======
+  val size = p(DMAKey).dsmSize
+  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
+    name = "dmaSlaveToNoC",
+    sourceId = IdRange(0, 256),
+    requestFifo = true,
+    visibility = Seq(AddressSet(0x0, 0xffff))))
+
+  val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
+    name = "dmaSlaveToDSM",
+>>>>>>> Stashed changes
     sourceId = IdRange(0, 256),
     requestFifo = true,
     visibility = Seq(AddressSet(0x0, 0xffff))))
@@ -110,6 +122,7 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   
   val cmd = Queue(io.in,  p(DMAKey).nOutstanding) //pipe, flow TODO
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   cmd.ready := false.B
 
   val sAddr = Module(new AddressGenerator).io
@@ -127,6 +140,8 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 //  when(dsm.d.fire()) { dIds := dIds + 1.U }
 //   nIds := nIds + 1.U 
 =======
+=======
+>>>>>>> Stashed changes
   cmd.ready := true.B
   val sAddr = Module(new AddressGenerator).io
   val dAddr = Module(new AddressGenerator).io
@@ -155,6 +170,9 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
     dsm.d.ready := true.B
   }
 
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 ////
   val queue = Module(new Queue(UInt(256.W), 32, true, true)).io
@@ -164,6 +182,9 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 =======
   queue.enq.valid := false.B
   queue.deq.ready := false.B
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
   
   queue.enq.valid := dsm.d.valid
