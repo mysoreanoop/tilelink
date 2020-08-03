@@ -27,14 +27,19 @@ case class DMAParams(
     addrWidth: Int = 32,
     addrCtrlWidth: Int = 16,
     idWidth: Int = 8,
+    txnIdWidth:Int = 4,
     beatBytes: Int = 32,
     maxBurst: Int = 4,
-    fifoDepth: Int = 512,
-    nOutstanding: Int = 8,
+    fifoDepth: Int = 8,
+    nOutstanding: Int = 4,
     maxDMAReqs: Int = 4) {
   //derive from top config?
   val busWidth = beatBytes * 8
   val wordsPerBeat = busWidth/dataWidth
+  val maxWords = maxBurst * wordsPerBeat
+  val maxBytes = maxBurst * beatBytes
+  val lgMaxBytes = log2Up(maxBytes)
+
 }
 
 case object DSMKey extends Field[DSMParams]
@@ -63,47 +68,22 @@ class PortParam(flag: Boolean) (implicit p: Parameters) extends Bundle {
 class CSRBundle(implicit p: Parameters) extends Bundle {
   val src    = new PortParam(true)
   val dest   = new PortParam(true)
-  val txnId  = UInt(log2Up(p(DMAKey).maxDMAReqs).W)
+  val txnId  = UInt(p(DMAKey).txnIdWidth.W)
 
   override def cloneType = (new CSRBundle).asInstanceOf[this.type]
 }
 
 class DMA(implicit p: Parameters) extends LazyModule {
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
   val size = p(DSMKey).dsmSize
 //  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
 //    name = "dmaSlaveToNoC",
-//    sourceId = IdRange(0, 128),
+//    sourceId = IdRange(0, 16),
 //    requestFifo = true,
-//    visibility = Seq(AddressSet(0x10000, 0xffff))))
+//    visibility = Seq(AddressSet(0x0, 0xffffff))))
 
   val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
     name = "dmaSlaveToDSM",
-    sourceId = IdRange(0, 64),
-=======
-  val size = p(DMAKey).dsmSize
-  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
-    name = "dmaSlaveToNoC",
-=======
-  val size = p(DMAKey).dsmSize
-  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
-    name = "dmaSlaveToNoC",
-    sourceId = IdRange(0, 256),
-    requestFifo = true,
-    visibility = Seq(AddressSet(0x0, 0xffff))))
-
-  val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
-    name = "dmaSlaveToDSM",
->>>>>>> Stashed changes
-    sourceId = IdRange(0, 256),
-    requestFifo = true,
-    visibility = Seq(AddressSet(0x0, 0xffff))))
-
-  val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
-    name = "dmaSlaveToDSM",
-    sourceId = IdRange(0, 256),
->>>>>>> Stashed changes
+    sourceId = IdRange(0, 16),
     requestFifo = true,
     visibility = Seq(AddressSet(0x0, 0xffffff))))
   
@@ -112,182 +92,121 @@ class DMA(implicit p: Parameters) extends LazyModule {
 
 class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   val c = p(DMAKey)
+
 //  val (noc, nocEdge) = outer.noc.out(0)
   val (dsm, dsmEdge) = outer.dsm.out(0) 
+
+//  val dAddr = Module(new AddressGenerator).io
+  val sAddr = Module(new AddressGenerator).io
+
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new CSRBundle))
-    val status = Valid(UInt(log2Up(p(DMAKey).maxDMAReqs).W))
+    val status = Decoupled(UInt(c.txnIdWidth.W))
     val error = Output(Bool())
+//    val dOut = dAddr.out.cloneType
+    val sOut = sAddr.out.cloneType
+    val qOut = Decoupled(UInt(256.W))
   })
-  
-  val cmd = Queue(io.in,  p(DMAKey).nOutstanding) //pipe, flow TODO
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-  cmd.ready := false.B
 
-  val sAddr = Module(new AddressGenerator).io
-  sAddr.cmd.valid := cmd.valid
-  sAddr.cmd.bits := cmd.bits.src
-  sAddr.req := false.B
+  //TODO assert if xCnt*xStep == yCnt*yStep
 
-  val dAddr = Module(new AddressGenerator).io
-  dAddr.cmd.valid := cmd.valid
-  dAddr.cmd.bits := cmd.bits.dest
-  dAddr.req := false.B
+//  io.dOut <> dAddr.out
+  io.sOut <> sAddr.out
 
-  val dIds = RegInit(0.U(6.W))
-  val nIds = RegInit(0.U(6.W))
-//  when(dsm.d.fire()) { dIds := dIds + 1.U }
-//   nIds := nIds + 1.U 
-=======
-=======
->>>>>>> Stashed changes
-  cmd.ready := true.B
-  val sAddr = Module(new AddressGenerator).io
-  val dAddr = Module(new AddressGenerator).io
-  sAddr.cmd.valid := cmd.valid
-  sAddr.cmd.bits := cmd.bits.src
-  dAddr.cmd.valid := cmd.valid
-  dAddr.cmd.bits := cmd.bits.dest
+  val sCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
+//val dCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
+  val txn = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
+  io.in.ready := sCmd.enq.ready &&txn.enq.ready
+  sCmd.enq.valid := io.in.valid
+  //dCmd.enq.valid := io.in.valid
+  txn.enq.valid := io.in.valid
+  sCmd.enq.bits := io.in.bits.src
+  //dCmd.enq.bits := io.in.bits.dest
+  txn.enq.bits := io.in.bits.txnId
 
-  val dIds = RegInit(0.U(8.W))
-  val nIds = RegInit(0.U(8.W))
-   dIds := dIds + 1.U  //TODO show some frugality, dammit!
-   nIds := nIds + 1.U 
-  
-  val z = RegInit(0.U(8.W))
-  z := z + 1.U
-  when(z < 255.U) {
-    noc.a.valid := true.B
-    noc.a.bits := nocEdge.Put(fromSource = nIds, 
-      toAddress = z*4.U, lgSize = 1.U,
-      data = VecInit(Seq.fill(4)(z)).asUInt, mask = 15.U)._2
-    noc.d.ready := true.B
-    dsm.a.valid := true.B
-    dsm.a.bits := dsmEdge.Put(fromSource = dIds, 
-      toAddress = z*4.U, lgSize = 1.U,
-      data = VecInit(Seq.fill(4)(z)).asUInt, mask = 15.U)._2
-    dsm.d.ready := true.B
+  //dAddr.cmd <> dCmd.deq
+  //dAddr.out.ready := false.B
+  sAddr.cmd <> sCmd.deq
+  sAddr.out.ready := false.B
+  txn.deq <> io.status
+
+  val sIds = RegInit(0.U(4.W))
+  //val dIds = RegInit(0.U(4.W))
+ 
+  val queue = Module(new Queue(UInt((c.beatBytes*8).W), c.fifoDepth, true, true)).suggestName("mainQueue")
+  queue.io.enq.valid := dsm.d.valid
+  queue.io.enq.bits := dsm.d.bits.data
+  dsm.d.ready := queue.io.enq.ready
+  //queue.io.deq.ready := false.B
+  queue.io.deq <> io.qOut
+
+  //queue.io.deq.ready := noc.a.ready
+  //noc.a.valid := queue.io.deq.valid
+  val next = RegInit(false.B)
+  when(dsm.a.fire()) {
+      //sAddr.out.bits.last && sAddr.out.valid) {
+    sIds := sIds+1.U
+    next := true.B
+    //sAddr.out.ready := true.B
   }
+//  when(noc.a.fire() && nocEdge.last(noc.a)) {
+//    dIds := dIds+1.U
+//    dAddr.out.ready := true.B
+//  }
+  dsm.a.valid := sAddr.out.valid
+  sAddr.out.ready := sCmd.deq.valid && ~RegNext(sCmd.deq.valid) || next
+  dsm.a.bits := dsmEdge.Get(
+    fromSource = sIds, 
+    toAddress = sAddr.out.bits.addr,
+    lgSize = sAddr.out.bits.size)._2 //TODO ._1
 
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-////
-  val queue = Module(new Queue(UInt(256.W), 32, true, true)).io
-//  queue1.enq.valid := false.B
-//  queue1.deq.ready := false.B
-<<<<<<< Updated upstream
-=======
-  queue.enq.valid := false.B
-  queue.deq.ready := false.B
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-  
-  queue.enq.valid := dsm.d.valid
-  dsm.d.ready := queue.enq.ready
-  queue.deq.ready := false.B
-  queue.enq.bits := dsm.d.bits.data
-  val d = LFSR(16)
-  val q = RegInit(0.U(16.W))
-  val t = RegInit(0.U(8.W))
-  q := q+1.U
-//  noc.a.valid := false.B
-//  noc.d.ready := false.B
-//  noc.a.bits := DontCare
-  dsm.a.valid := false.B
-  dsm.d.ready := false.B
-  dsm.a.bits := DontCare
-  io.error := dsm.d.bits.denied
-  when(q === 199.U) {
-    t := 0.U
-  } 
-  when(q > 1.U) {
-    dsm.d.ready := true.B
-  }
-  when(q>=1.U && q<=4.U) {
-//    noc.a.valid := true.B
-//    noc.a.bits := nocEdge.Put(fromSource = nIds, 
-//      toAddress = "h10000".U + t*32.U, lgSize = 1.U,
-//      data = d)._2
-//    noc.d.ready := true.B
-
-    dsm.a.valid := true.B
-    dsm.a.bits.opcode  := TLMessages.PutPartialData
-    dsm.a.bits.param   := 0.U
-    dsm.a.bits.size    := 7.U
-    dsm.a.bits.source  := dIds
-    dsm.a.bits.address := 0.U
-    dsm.a.bits.mask    := "hffff".U
-    dsm.a.bits.data    := "h12345678".U + q
-    dsm.a.bits.corrupt := 0.U
-    //dsm.a.bits := dsmEdge.Put(fromSource = 33.U, 
-    //  toAddress =0.U, lgSize = 8.U,
-    //  data = d+"h10".U(32.W), mask="h1".U)._2
-
-    t := t+1.U
-    } .elsewhen(q>=200.U) {
-//    noc.a.valid := true.B
-//    noc.a.bits := nocEdge.Get(fromSource = nIds, 
-//      toAddress = "h10000".U + t*32.U, lgSize = 1.U)._2
-//    noc.d.ready := true.B
-
-    queue.enq.valid := dsm.d.valid
-    dsm.d.ready := queue.enq.ready
-
-    when(q>205.U) {queue.deq.ready := true.B}
-    when(q===200.U) {
-
-      dsm.a.valid := true.B
-      dsm.a.bits := dsmEdge.Get(fromSource = dIds, 
-        toAddress = 0.U, lgSize = 7.U)._2
-    }
-//    queue1.enq.valid := noc.d.valid
-//    noc.d.ready := queue1.enq.ready
-    t := t+1.U
-  }
+//  noc.a.valid := true.B
+//  dAddr.out.ready := dCmd.deq.valid && ~RegInit(dCmd.deq.valid)
+//  noc.a.bits := nocEdge.Put(
+//    fromSource = dIds, 
+//    toAddress = dAddr.out.bits.addr,
+//    lgSize = dAddr.out.bits.size,
+//    data = queue.io.deq.bits,
+//    mask = dAddr.out.bits.mask)._2
 ////
 
-//  val queue = Module(new Queue(UInt(c.busWidth.W), c.fifoDepth, true, true)).io
+//  val queue.io = Module(new Queue(UInt(c.busWidth.W), c.fifoDepth, true, true)).io
 //  val get = dsmEdge.Get(fromSource = dIds, //cmd.bits.src.nodeId, 
-//    toAddress = sAddr.out.addr, lgSize = 1.U)._2//sAddr.out.len)._2//TODO sAddr.mask?
+//    toAddress = sAddr.out.addr, lgSize = 1.U)._2//sAddr.out.size)._2//TODO sAddr.mask?
 //    //dsmEdge.get -> nocEdge.get
 //  val put = nocEdge.Put(fromSource = nIds, //cmd.bits.dest.nodeId, 
-//    toAddress = dAddr.out.addr, lgSize = 1.U,// dAddr.out.len, 
-//    data = queue.deq.bits)._2//, mask = dAddr.out.mask)._2
+//    toAddress = dAddr.out.addr, lgSize = 1.U,// dAddr.out.size, 
+//    data = queue.io.deq.bits)._2//, mask = dAddr.out.mask)._2
 //
 ////  when(cmd.bits.src.nodeId === 0.U) {
 //    dsm.a.valid := cmd.valid
 //    dsm.a.bits := get
 //    sAddr.req := dsm.a.ready
-//    queue.enq.valid := dsm.d.valid
-//    queue.enq.bits  := dsm.d.bits.data
-//    dsm.d.ready := queue.enq.ready
+//    queue.io.enq.valid := dsm.d.valid
+//    queue.io.enq.bits  := dsm.d.bits.data
+//    dsm.d.ready := queue.io.enq.ready
 //
-//    noc.a.valid := queue.deq.valid && cmd.valid
+//    noc.a.valid := queue.io.deq.valid && cmd.valid
 //    noc.a.bits := put
-//    queue.deq.ready := noc.a.ready
-//    dAddr.req := queue.deq.valid && noc.a.ready
+//    queue.io.deq.ready := noc.a.ready
+//    dAddr.req := queue.io.deq.valid && noc.a.ready
 //    noc.d.ready := true.B//always ready for write response
 //  } .otherwise {
 //    noc.a.valid := cmd.valid
 //    noc.a.bits := get
 //    sAddr.req := noc.a.ready
-//    queue.enq.valid := noc.d.valid
-//    queue.enq.bits := noc.d.bits.data
-//    noc.d.ready := queue.enq.ready
+//    queue.io.enq.valid := noc.d.valid
+//    queue.io.enq.bits := noc.d.bits.data
+//    noc.d.ready := queue.io.enq.ready
 //
-//    dsm.a.valid := queue.deq.valid && cmd.valid
+//    dsm.a.valid := queue.io.deq.valid && cmd.valid
 //    dsm.a.bits := put
-//    queue.deq.ready := dsm.a.ready
-//    dAddr.req := queue.deq.valid && dsm.a.ready
+//    queue.io.deq.ready := dsm.a.ready
+//    dAddr.req := queue.io.deq.valid && dsm.a.ready
 //    dsm.d.ready := true.B
 //  }
   
-  cmd.ready := dAddr.last
+  io.error := dsm.d.bits.denied
   io.status.bits := 0.U//cmd.bits.txnId
   io.status.valid := false.B//dAddr.last
 
@@ -301,7 +220,7 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   //val debugResp = RegInit(Mux(cmd.bits.src.nodeId === 0.U, noc.d.bits, dsm.d.bits))
   //val debugReq = RegInit(Mux(cmd.bits.src.nodeId === 0.U, dsm.d.bits, noc.d.bits))
   /* Future work:
-   * Between the queue and writer, and just before the reader, we could introduce
+   * Between the queue.io and writer, and just before the reader, we could introduce
    * the bus holding logic useful for interleaved txns over a single bus between 
    * both Orch and DMA on one side and DSM on the other side.
    * Currently, we assume that the Orchestrator to DSM reqs and DMA to DSM reqs 
@@ -312,55 +231,83 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
    * while dstAddr is still processing the previous request.
    * However, if the direction of data transfer (DSM <> NoC) changes, then this 
    * would not present any obvious advantage because the put port will be ready 
-   * before the queue from where the data is sourced is populated. 
+   * before the queue.io from where the data is sourced is populated. 
    * But considering once the initial configuration data is downloaded from 
    * NoC to DSM, all succeeding transactions will likely be from DSM to NoC, 
    * having this feature implemented would be sporadically advantageous.*/
 }
 
-/* Produces address to read from or write to.
- * To be used in the right context depending on which agent is the source.
- */
+/* Produces address to read from or write to*/
 class AddressGenerator(implicit p: Parameters) extends Module {
   val c = p(DMAKey)
   val io = IO(new Bundle {
-    val out  = Output(new Bundle{
-      val addr = UInt(p(DMAKey).addrWidth.W)
-      val len = UInt(log2Up(p(DMAKey).maxBurst).W)
-      val mask = UInt(p(DMAKey).wordsPerBeat.W)
+    val cmd = Flipped(Decoupled(new PortParam(false)))
+    val out = Decoupled(new Bundle{
+      val addr = UInt(c.addrWidth.W)
+      val size = UInt(log2Up(c.lgMaxBytes).W)
+      val mask = UInt(c.beatBytes.W)
+      val last = Bool()
     })
-    val cmd   = Flipped(Valid(new PortParam(false)))
-    val last  = Output(Bool())
-    val req   = Input(Bool())
   })
 
   val cmd = RegInit({val n = Wire(new PortParam(false));
     n := DontCare; n})
-  val mask = RegInit(0.U(c.wordsPerBeat.W))
-  val len  = RegInit((c.maxBurst-1).U(log2Up(c.maxBurst).W))
+  val mask = RegInit(0.U(c.beatBytes.W))
+  val size = RegInit(c.lgMaxBytes.U(log2Up(c.lgMaxBytes).W))
+  val last = RegInit(false.B)
 
+  val newCmd = io.cmd.valid && (RegNext(last && io.out.ready) || ~RegNext(io.cmd.valid))
+  io.cmd.ready := last && io.out.ready
+  io.out.valid := io.cmd.valid
+
+  io.out.bits.last := last
+  io.out.bits.addr := cmd.addr 
+  io.out.bits.size := size
+  io.out.bits.mask := mask
+  when(io.out.ready && ~newCmd) {
+    cmd := calculate(cmd)
+  } .elsewhen(newCmd) {
+    when(io.out.ready) {
+      io.out.bits.addr := io.cmd.bits.addr
+      io.out.bits.size := Mux(io.cmd.bits.xCnt >= (c.lgMaxBytes).U, 
+        (c.lgMaxBytes).U, 0.U)
+      io.out.bits.mask := Mux(io.cmd.bits.xCnt >= (c.beatBytes).U,
+        Fill(c.beatBytes, 1.U), createMask(io.cmd.bits.xCnt))
+      io.out.bits.last := Mux(io.cmd.bits.xCnt >= (c.beatBytes).U, false.B, true.B)
+      cmd := calculate(io.cmd.bits)
+    } .otherwise {
+      cmd := io.cmd.bits 
+    }
+  }
+  
+  def createMask(n: UInt): UInt = {(1.U << n) - 1.U}
   def calculate(n:PortParam) = {
     val out = Wire(new PortParam(false))
     out := n
     when(n.xCnt > 0.U) {
       /*This exploits busWidth and burst advantages.*/
-      when(n.xCnt >= (c.wordsPerBeat * c.maxBurst).U) {
-        out.xCnt := n.xCnt - (c.wordsPerBeat * c.maxBurst).U
-        mask := Fill(c.wordsPerBeat, 1.U)
-        len := c.maxBurst.U
-        out.addr := n.addr + (c.wordsPerBeat * c.maxBurst).U * (c.dataWidth/8).U 
+      when(n.xCnt >= c.maxWords.U) {
+        out.xCnt := n.xCnt - c.maxWords.U
+        mask := Fill(c.beatBytes, 1.U)
+        size := c.lgMaxBytes.U
+        out.addr := n.addr + c.maxBytes.U
+        when(n.xCnt - c.maxWords.U === 0.U) {
+          when(n.yCnt === 0.U) {
+            last := true.B
+          }
+        }
         //Assuming xStep = 1
       } .otherwise {
         /* Cut it up into as many single beats and one final masked beat
          * Determining max possible burstSize is costly*/
-        len := 1.U
+        size := 1.U
         when(n.xCnt >= c.wordsPerBeat.U) {
-          mask := Fill(c.wordsPerBeat, 1.U)
+          mask := Fill(c.beatBytes, 1.U)
           out.xCnt := n.xCnt - c.wordsPerBeat.U
           out.addr := n.addr + c.wordsPerBeat.U * (c.dataWidth/8).U
           //if xCnt becomes zero, then it goes to the xCnt===0 loop, which is fine
         } .otherwise {//masked beat
-          mask := ((1.U << n.xCnt) - 1.U)// << (c.wordsPerBeat.U - n.xCnt)
+          mask := createMask(n.xCnt)
           out.xCnt := 0.U
           out.addr := n.addr + n.xCnt * (c.dataWidth/8).U
         }
@@ -371,26 +318,13 @@ class AddressGenerator(implicit p: Parameters) extends Module {
         out.addr := n.addr + n.yStep * (c.dataWidth/8).U
         //yStep and yCnt can be any value
         out.yCnt := n.yCnt - 1.U
-      } .otherwise {//Done
-        io.last := true.B
-      }
+      } //.otherwise done
     }
     out
   }
-  
-  //io.inUse    := (cmd.yCnt =/= 0.U) || (cmd.xCnt =/= 0.U)
-  io.last := false.B
-  val cmdV = RegNext(io.cmd.valid) 
-  io.out.addr := cmd.addr //TODO misses the first addr!
-  io.out.len := len
-  io.out.mask := mask
-  when(io.req && ~io.cmd.valid) {
-    cmd := calculate(cmd)
-  } .elsewhen(io.cmd.valid) {
-    cmd := Mux(io.req, calculate(io.cmd.bits), io.cmd.bits)
-    assert(io.cmd.bits.xStep === 1.U, 
-      "Address increment after every burst != 1;" +
-      "This leads to a very inefficient mode of data transfer!")
+  when(cmd.yCnt === 0.U && cmd.xCnt === 0.U ) {
+    last := true.B
+    io.cmd.ready := true.B
   }
 }
 // Given an address and size, create a mask of beatBytes size
@@ -424,106 +358,105 @@ class AddressGenerator(implicit p: Parameters) extends Module {
 //      Cat(helper(lgBytes-log2Ceil(groupBy)).map(_._1).reverse)
 //  }
 //}
-
-class ManagerTL(implicit p: Parameters) extends LazyModule {
-  val device = new SimpleDevice("ManagerTL", Seq())
-  val beatBytes = 32
-  val node = TLHelper.makeManagerNode(beatBytes, TLSlaveParameters.v1(
-    address = Seq(AddressSet(0x0, 0xffff)),
-    resources = device.reg,
-    regionType = RegionType.UNCACHED,
-    executable = true,
-    supportsGet = TransferSizes(1, beatBytes),
-    supportsPutFull = TransferSizes(1, beatBytes),
-    supportsPutPartial = TransferSizes(1, beatBytes)))
-  lazy val module = new LazyModuleImp(this) {
-    val (tl, edge) = node.in(0)
-    val mem = Module(new mkDataMem).io
-    mem.wrAddr.valid := false.B
-    mem.wrAddr.bits := DontCare
-    mem.wrData := DontCare
-    mem.strobe := DontCare
-    mem.rdAddr.valid := false.B
-    mem.rdAddr.bits := DontCare
-    
-    def groupBy4(in: UInt): Vec[Bool] = {
-      val out = RegInit(VecInit(Seq.fill(8) (false.B)))
-      for(i <- 0 until in.getWidth/4) {
-        out(i) := in(i*4+3, i*4)
-      }
-      out
-    }
-
-    val aReady = RegInit(false.B)
-    tl.a.ready := aReady
-    val dValid = RegInit(false.B)
-    val bytes = RegInit(0.U(8.W))
-    tl.d.valid := dValid
-    tl.d.bits := edge.AccessAck(tl.a.bits)
-    //XXX Completely ignoring mask here!
-    when(tl.a.valid) {
-      //assert(tl.a.bits.size < 2.U, "Reading less than a word or nothing!")
-      assert(tl.a.bits.address(1,0) === 0.U, "Address not aligned to word boundary!")
-      when(tl.a.bits.opcode === 0.U || tl.a.bits.opcode === 1.U) {
-        when(tl.a.bits.size <= 32.U) {
-          //Single beat (with strobe)
-          assert(bytes === 0.U, "Last burst txn was abandoned midway!")
-          mem.wrAddr.valid := true.B
-          mem.wrAddr.bits := tl.a.bits.address(15, 5)
-          mem.wrData := tl.a.bits.data.asTypeOf(Vec(8, UInt(32.W)))
-          //mem.strobe := Mux(tl.a.bits.size === 5.U, Fill(8, 1.U), 
-          //  //MaskGen(tl.a.bits.addr, tl.a.bits.size, 32, 4))
-          //  ((1 << tl.bits.size)-1 << tl.a.bits.addr(4,2)))
-          //^ cannot assert a condition here, so writer be safe!
-          mem.strobe := groupBy4(tl.a.bits.mask)
-          tl.a.ready := true.B
-          dValid := true.B
-        } .otherwise {
-          //Multi beat
-          dValid := false.B
-          bytes := Mux(bytes === 0.U, tl.a.bits.size - 32.U, 
-            Mux(bytes < 32.U, 0.U, bytes - 32.U))
-          mem.wrAddr.valid := true.B
-          mem.wrAddr.bits := Mux(bytes === 0.U, tl.a.bits.address(15,5), 
-            tl.a.bits.address(15,5) + 32.U * bytes)
-          mem.wrData := tl.a.bits.data.asTypeOf(Vec(8, UInt(32.W)))
-          mem.strobe := groupBy4(tl.a.bits.mask)
-          tl.a.ready := true.B
-          dValid := bytes <= 32.U
-        }
-      } .elsewhen(tl.a.bits.opcode === 4.U) {
-        //Mem read operations
-        tl.a.ready := true.B
-        aReady := false.B
-        when(tl.a.bits.size <= 3.U) {
-          dValid := true.B
-        }
-        
-      }
-    }
-  }
-}
+//
+//class ManagerTL(implicit p: Parameters) extends LazyModule {
+//  val device = new SimpleDevice("ManagerTL", Seq())
+//  val beatBytes = 32
+//  val node = TLHelper.makeManagerNode(beatBytes, TLSlaveParameters.v1(
+//    address = Seq(AddressSet(0x0, 0xffff)),
+//    resources = device.reg,
+//    regionType = RegionType.UNCACHED,
+//    executable = true,
+//    supportsGet = TransferSizes(1, beatBytes),
+//    supportsPutFull = TransferSizes(1, beatBytes),
+//    supportsPutPartial = TransferSizes(1, beatBytes)))
+//  lazy val module = new LazyModuleImp(this) {
+//    val (tl, edge) = node.in(0)
+//    val mem = Module(new mkDataMem).io
+//    mem.wrAddr.valid := false.B
+//    mem.wrAddr.bits := DontCare
+//    mem.wrData := DontCare
+//    mem.strobe := DontCare
+//    mem.rdAddr.valid := false.B
+//    mem.rdAddr.bits := DontCare
+//    
+//    def groupBy4(in: UInt): Vec[Bool] = {
+//      val out = RegInit(VecInit(Seq.fill(8) (false.B)))
+//      for(i <- 0 until in.getWidth/4) {
+//        out(i) := in(i*4+3, i*4)
+//      }
+//      out
+//    }
+//
+//    val aReady = RegInit(false.B)
+//    tl.a.ready := aReady
+//    val dValid = RegInit(false.B)
+//    val bytes = RegInit(0.U(8.W))
+//    tl.d.valid := dValid
+//    tl.d.bits := edge.AccessAck(tl.a.bits)
+//    //XXX Completely ignoring mask here!
+//    when(tl.a.valid) {
+//      //assert(tl.a.bits.size < 2.U, "Reading less than a word or nothing!")
+//      assert(tl.a.bits.address(1,0) === 0.U, "Address not aligned to word boundary!")
+//      when(tl.a.bits.opcode === 0.U || tl.a.bits.opcode === 1.U) {
+//        when(tl.a.bits.size <= 32.U) {
+//          //Single beat (with strobe)
+//          assert(bytes === 0.U, "Last burst txn was abandoned midway!")
+//          mem.wrAddr.valid := true.B
+//          mem.wrAddr.bits := tl.a.bits.address(15, 5)
+//          mem.wrData := tl.a.bits.data.asTypeOf(Vec(8, UInt(32.W)))
+//          //mem.strobe := Mux(tl.a.bits.size === 5.U, Fill(8, 1.U), 
+//          //  //MaskGen(tl.a.bits.addr, tl.a.bits.size, 32, 4))
+//          //  ((1 << tl.bits.size)-1 << tl.a.bits.addr(4,2)))
+//          //^ cannot assert a condition here, so writer be safe!
+//          mem.strobe := groupBy4(tl.a.bits.mask)
+//          tl.a.ready := true.B
+//          dValid := true.B
+//        } .otherwise {
+//          //Multi beat
+//          dValid := false.B
+//          bytes := Mux(bytes === 0.U, tl.a.bits.size - 32.U, 
+//            Mux(bytes < 32.U, 0.U, bytes - 32.U))
+//          mem.wrAddr.valid := true.B
+//          mem.wrAddr.bits := Mux(bytes === 0.U, tl.a.bits.address(15,5), 
+//            tl.a.bits.address(15,5) + 32.U * bytes)
+//          mem.wrData := tl.a.bits.data.asTypeOf(Vec(8, UInt(32.W)))
+//          mem.strobe := groupBy4(tl.a.bits.mask)
+//          tl.a.ready := true.B
+//          dValid := bytes <= 32.U
+//        }
+//      } .elsewhen(tl.a.bits.opcode === 4.U) {
+//        //Mem read operations
+//        tl.a.ready := true.B
+//        aReady := false.B
+//        when(tl.a.bits.size <= 3.U) {
+//          dValid := true.B
+//        }
+//        
+//      }
+//    }
+//  }
+//}
 
 class CRTemp(implicit p: Parameters) extends LazyModule {
-  //val ram1 = LazyModule(new TLRAM(address=AddressSet(0x10000, 0xffff), 
-  //  beatBytes=4))
-  //val ram0 = LazyModule(new ManagerTL)
-  val ram0 = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+  val rom = LazyModule(new TLROM(
+    base = 0,
+    size = 0x100,
+    contentsDelayed = Seq.tabulate(0x100) {i=>i.toByte},
     beatBytes = 32))
-  //TODO check conflicting addressSets
+  //val ram0 = LazyModule(new ManagerTL)
+  //val rom = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+  //  beatBytes = 32))
+//  val ram = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+//    beatBytes = 32))
+
   val dma  = LazyModule(new DMA)
-  ram0.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.dsm
-  //ram1.node := dma.noc
+  rom.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.dsm
+//  ram.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.noc
 
   lazy val module = new LazyModuleImp(this) {
-    val io = IO(new Bundle {
-      val other = dma.module.io.cloneType
-      //val dsm = dma.module.io.dsmIO.cloneType
-      //val noc = dma.module.io.nocIO.cloneType
-    })
-    //io.dsm <> dma.module.io.dsmIO
-    //io.noc <> dma.module.io.nocIO
-    io.other <> dma.module.io
+    val io = IO(dma.module.io.cloneType)
+    io <> dma.module.io
   }
 }
 
@@ -538,32 +471,32 @@ class CRTemp(implicit p: Parameters) extends LazyModule {
 * stop reading from the competing address.
 */
 
-class mkDataMem(implicit p: Parameters) extends Module {
-  val c = p(DSMKey)
-  val io = IO(new Bundle{
-    val rdAddr = Flipped(Decoupled(UInt(c.addrWidth.W)))
-    val rdData = Vec(c.nPorts, Output(UInt(c.dataWidth.W)))
-    val wrAddr = Flipped(Decoupled(UInt(c.addrWidth.W)))
-    val wrData = Vec(c.nPorts, Input(UInt(c.dataWidth.W)))
-    val strobe = Vec(c.nPorts, Input(Bool()))
-  })
-
-  val storage = Seq.fill(c.nPorts) {SyncReadMem(c.dsmSize/c.nPorts, UInt(c.dataWidth.W))}
-  val rdData = Seq.fill(c.nPorts) {RegInit(0.U(c.dataWidth.W))}
-  io.rdAddr.ready := true.B
-  when(io.rdAddr.valid) {
-    for(i <- 0 until c.nPorts) {
-        rdData(i) := storage(i).read(io.rdAddr.bits)
-    }
-  }
-  io.rdData := rdData
-
-  io.wrAddr.ready := Mux(io.rdAddr.valid, io.wrAddr.bits =/= io.rdAddr.bits, true.B)
-  when(io.wrAddr.valid && io.wrAddr.bits =/= io.rdAddr.bits) {
-    for(i <- 0 until c.nPorts) {
-      when(io.strobe(i)) {
-        storage(i).write(io.wrAddr.bits, io.wrData(i))
-      }
-    }
-  }
-}
+//class mkDataMem(implicit p: Parameters) extends Module {
+//  val c = p(DSMKey)
+//  val io = IO(new Bundle{
+//    val rdAddr = Flipped(Decoupled(UInt(c.addrWidth.W)))
+//    val rdData = Vec(c.nPorts, Output(UInt(c.dataWidth.W)))
+//    val wrAddr = Flipped(Decoupled(UInt(c.addrWidth.W)))
+//    val wrData = Vec(c.nPorts, Input(UInt(c.dataWidth.W)))
+//    val strobe = Vec(c.nPorts, Input(Bool()))
+//  })
+//
+//  val storage = Seq.fill(c.nPorts) {SyncReadMem(c.dsmSize/c.nPorts, UInt(c.dataWidth.W))}
+//  val rdData = Seq.fill(c.nPorts) {RegInit(0.U(c.dataWidth.W))}
+//  io.rdAddr.ready := true.B
+//  when(io.rdAddr.valid) {
+//    for(i <- 0 until c.nPorts) {
+//        rdData(i) := storage(i).read(io.rdAddr.bits)
+//    }
+//  }
+//  io.rdData := rdData
+//
+//  io.wrAddr.ready := Mux(io.rdAddr.valid, io.wrAddr.bits =/= io.rdAddr.bits, true.B)
+//  when(io.wrAddr.valid && io.wrAddr.bits =/= io.rdAddr.bits) {
+//    for(i <- 0 until c.nPorts) {
+//      when(io.strobe(i)) {
+//        storage(i).write(io.wrAddr.bits, io.wrData(i))
+//      }
+//    }
+//  }
+//}
