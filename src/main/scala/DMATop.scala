@@ -3,6 +3,7 @@ package dma
 import chisel3._
 import chisel3.util._
 import chisel3.util.random._
+import chisel3.experimental.chiselName
 
 import freechips.rocketchip.config.{Parameters, Field, Config}
 import freechips.rocketchip.diplomacy._
@@ -43,7 +44,7 @@ case class DMAParams(
 }
 
 case object DSMKey extends Field[DSMParams]
-case object DMAKey extends Field[DMAParams]//  (new DMAParams)
+case object DMAKey extends Field[DMAParams]
 
 class WithDSM(in:Boolean) extends Config((site, here, up) => {
   case DSMKey => DSMParams(temp = in)
@@ -75,11 +76,11 @@ class CSRBundle(implicit p: Parameters) extends Bundle {
 
 class DMA(implicit p: Parameters) extends LazyModule {
   val size = p(DSMKey).dsmSize
-//  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
-//    name = "dmaSlaveToNoC",
-//    sourceId = IdRange(0, 16),
-//    requestFifo = true,
-//    visibility = Seq(AddressSet(0x0, 0xffffff))))
+  val noc = TLHelper.makeClientNode(TLMasterParameters.v1(
+    name = "dmaSlaveToNoC",
+    sourceId = IdRange(0, 16),
+    requestFifo = true,
+    visibility = Seq(AddressSet(0x0, 0xffffff))))
 
   val dsm = TLHelper.makeClientNode(TLMasterParameters.v1(
     name = "dmaSlaveToDSM",
@@ -90,89 +91,103 @@ class DMA(implicit p: Parameters) extends LazyModule {
   lazy val module = new DMAModule(this)
 }
 
+@chiselName
 class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   val c = p(DMAKey)
-//  val (noc, nocEdge) = outer.noc.out(0)
+  val (noc, nocEdge) = outer.noc.out(0)
   val (dsm, dsmEdge) = outer.dsm.out(0) 
-
-//  val dAddr = Module(new AddressGenerator).io
-  val sAddr = Module(new AddressGenerator).io
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new CSRBundle))
-    //val status = Decoupled(UInt(c.txnIdWidth.W))
+    val status = Decoupled(UInt(c.txnIdWidth.W))
     val error = Output(Bool())
-//    val dOut = dAddr.out.cloneType
-//    val sOut = sAddr.out.cloneType
     val qOut = Decoupled(UInt(256.W))
   })
+
+  val _dAddr = Module(new AddressGenerator).suggestName("dAddr")
+  val _sAddr = Module(new AddressGenerator).suggestName("sAddr")
+  val dAddr = _dAddr.io
+  val sAddr = _sAddr.io
+
   val h = io.in.bits
   assert(h.src.xCnt * h.src.yCnt === h.dest.xCnt * h.dest.yCnt, 
     "Total bytes to be read is not equal to the total bytes to be written!")
+  //TODO boundary compliance asserts
 
-//  io.dOut <> dAddr.out
-//  io.sOut <> sAddr.out
+  val sAddrDone = RegInit(false.B)
+  when(sAddr.out.bits.last && dsm.a.fire) {//TODO isn't exhaustive
+    sAddrDone := true.B
+  } .elsewhen(io.in.ready) {
+    sAddrDone := false.B
+  }
 
-  val sCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
-//val dCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
-//  val txn = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
-  io.in.ready := sCmd.enq.ready// & txn.enq.ready //& dCmd.enq.ready
-  sCmd.enq.valid := io.in.valid
-  //dCmd.enq.valid := io.in.valid
-//  txn.enq.valid := io.in.valid
+  val txn  = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
+  val _sCmd = Module(new Queue(new PortParam(true), 1, true, true)).suggestName("sCmd")
+  val _dCmd = Module(new Queue(new PortParam(true), 1, true, true)).suggestName("dCmd")
+  val sCmd = _sCmd.io
+  val dCmd = _dCmd.io
+  io.in.ready := dCmd.enq.ready 
+  sCmd.enq.valid := io.in.valid && ~sAddrDone 
   sCmd.enq.bits := io.in.bits.src
-  //dCmd.enq.bits := io.in.bits.dest
-//  txn.enq.bits := io.in.bits.txnId
+  dCmd.enq.valid := io.in.valid
+  dCmd.enq.bits := io.in.bits.dest
 
-  //dAddr.cmd <> dCmd.deq
-  //dAddr.out.ready := false.B
+  txn.enq.valid := io.in.valid
+  txn.enq.bits := io.in.bits.txnId
+  io.status.bits  := txn.deq.bits
+  io.status.valid := dAddr.out.bits.last && dAddr.out.fire()
+  txn.deq.ready   := io.status.ready
+  
+  dAddr.cmd <> dCmd.deq
   sAddr.cmd <> sCmd.deq
-  //sAddr.out.ready := false.B
-  //txn.deq <> io.status
 
   val sIds = RegInit(0.U(4.W))
-  //val dIds = RegInit(0.U(4.W))
- 
-  val queue = Module(new Queue(UInt((c.beatBytes*8).W), c.fifoDepth, true, true)).suggestName("mainQueue")
-  queue.io.enq.valid := dsm.d.valid
-  queue.io.enq.bits := dsm.d.bits.data
-  dsm.d.ready := queue.io.enq.ready
-  //queue.io.deq.ready := false.B
-  queue.io.deq <> io.qOut
-
-  //queue.io.deq.ready := noc.a.ready
-  //noc.a.valid := queue.io.deq.valid
-  val next = RegInit(false.B)
+  val dIds = RegInit(0.U(4.W))
   when(dsm.a.fire()) {
-      //sAddr.out.bits.last && sAddr.out.valid) {
     sIds := sIds+1.U
-    //sAddr.out.ready := true.B
   }
-//  when(noc.a.fire() && nocEdge.last(noc.a)) {
-//    dIds := dIds+1.U
-//    dAddr.out.ready := true.B
-//  }
-  dsm.a.valid := sAddr.out.valid
-  sAddr.out.ready := dsm.a.ready
-  dsm.a.bits := dsmEdge.Get(
+  when(noc.a.fire() && nocEdge.last(noc.a)) {
+    dIds := dIds+1.U
+  }
+
+  /* Problems faced when allowing masked transactions:
+   * 1. Start address alignment and row-end-address alignment errors (TL specific)
+   * 2. Storing the masked read data in an intermediate queue and then feeding it to the
+   *    destination (write) port according to the destinations mask requires complex logic
+   *    to select appropriate words from the queue. */
+
+  val q = Module(new Queue(UInt((c.beatBytes*8).W), c.fifoDepth, true, true)).suggestName("q")
+  q.io.enq.valid := dsm.d.valid
+  q.io.enq.bits := dsm.d.bits.data //&& maskQ.deq.bits.groupBy(4)
+  dsm.d.ready := q.io.enq.ready
+  q.io.deq <> io.qOut
+  dsm.a.valid := sAddr.out.valid && ~sAddrDone
+  sAddr.out.ready := dsm.a.ready && ~sAddrDone
+  val get = dsmEdge.Get(
     fromSource = sIds, 
     toAddress = sAddr.out.bits.addr,
-    lgSize = sAddr.out.bits.size)._2 //TODO ._1
-  //TODO what to do with mask?
-
-//  noc.a.valid := true.B
-//  dAddr.out.ready := dCmd.deq.valid && ~RegInit(dCmd.deq.valid)
-//  noc.a.bits := nocEdge.Put(
-//    fromSource = dIds, 
-//    toAddress = dAddr.out.bits.addr,
-//    lgSize = dAddr.out.bits.size,
-//    data = queue.io.deq.bits,
-//    mask = dAddr.out.bits.mask)._2
-////
+    lgSize = sAddr.out.bits.size) //TODO mask?
+  /* Note:
+   * Mask for Get transactions need to be applied when storing the
+   * Get results (from dsm.a) in the mainQueue*/
+  assert(get._1, "Illegal access!")
+  dsm.a.bits := get._2
+  q.io.deq.ready := noc.a.fire() && dAddr.out.valid
+  noc.a.valid := q.io.deq.valid
+  dAddr.out.ready := noc.a.ready && q.io.deq.valid && nocEdge.last(noc.a)
+  val put = nocEdge.Put(
+    fromSource = dIds, 
+    toAddress = dAddr.out.bits.addr,
+    lgSize = dAddr.out.bits.size,
+    data = q.io.deq.bits,
+    mask = dAddr.out.bits.mask)
+  assert(put._1, "Illegal access!")
+  noc.a.bits := put._2
+  noc.d.ready := true.B//ignoring everything
 
 //  val queue.io = Module(new Queue(UInt(c.busWidth.W), c.fifoDepth, true, true)).io
 //  val get = dsmEdge.Get(fromSource = dIds, //cmd.bits.src.nodeId, 
-//    toAddress = sAddr.out.addr, lgSize = 1.U)._2//sAddr.out.size)._2//TODO sAddr.mask?
+//    toAddress = sAddr.out.addr, lgSize = sAddr.out.size)._2
 //    //dsmEdge.get -> nocEdge.get
 //  val put = nocEdge.Put(fromSource = nIds, //cmd.bits.dest.nodeId, 
 //    toAddress = dAddr.out.addr, lgSize = 1.U,// dAddr.out.size, 
@@ -206,19 +221,16 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 //    dsm.d.ready := true.B
 //  }
   
-  io.error := dsm.d.bits.denied
-//  io.status.bits := 0.U//cmd.bits.txnId
-//  io.status.valid := false.B//dAddr.last
+  /* Throw an error out based on the error signal in d channel
+   * Assuming that we send out valid requests all the time*/
+  io.error := dsm.d.bits.denied || noc.d.bits.denied
 
-  //Throw an error out based on the error signal in d channel
-  //io.error := false.B//Mux(cmd.bits.src.nodeId === 0.U, noc.d.bits.denied, dsm.d.bits.denied)
-  //Assuming that we send out valid requests all the time.
-
-  /* Holds the latest put transaction status; TODO expose it to IO somehow
+  /* Holds the latest "Put" transaction status; TODO expose it to IO somehow
    * In case something fails, we could look into this to see what error was seen
-   * in the put port. The get port error is also similarly logged.*/
-  //val debugResp = RegInit(Mux(cmd.bits.src.nodeId === 0.U, noc.d.bits, dsm.d.bits))
-  //val debugReq = RegInit(Mux(cmd.bits.src.nodeId === 0.U, dsm.d.bits, noc.d.bits))
+   * in the Put port. The Get port error is also similarly logged.*/
+  val debugNoC = RegInit(noc.d.bits)
+  val debugDSM = RegInit(dsm.d.bits)
+
   /* Future work:
    * Between the queue.io and writer, and just before the reader, we could introduce
    * the bus holding logic useful for interleaved txns over a single bus between 
@@ -256,7 +268,7 @@ class AddressGenerator(implicit p: Parameters) extends Module {
   val cmd = RegInit({val n = Wire(new PortParam(false));//xStep and yStep need not be reg'd
     n := DontCare; n})
   val last = calcLast(cmd.xCnt, cmd.yCnt) & io.cmd.valid
-  val fresh = io.cmd.valid & (RegNext(last) | ~RegNext(io.cmd.valid))
+  val fresh = io.cmd.valid & (RegNext(last && io.out.ready) | ~RegNext(io.cmd.valid))
 
   io.cmd.ready := last & io.out.ready
   io.out.valid := io.cmd.valid
@@ -470,14 +482,12 @@ class CRTemp(implicit p: Parameters) extends LazyModule {
     contentsDelayed = Seq.tabulate(0x10000) {i=>i.toByte},
     beatBytes = 32))
   //val ram0 = LazyModule(new ManagerTL)
-  //val rom = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
-  //  beatBytes = 32))
-//  val ram = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
-//    beatBytes = 32))
+  val ram = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+    beatBytes = 32))
 
   val dma  = LazyModule(new DMA)
   rom.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.dsm
-//  ram.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.noc
+  ram.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.noc
 
   lazy val module = new LazyModuleImp(this) {
     val io = IO(dma.module.io.cloneType)
