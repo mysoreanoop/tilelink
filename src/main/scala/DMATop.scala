@@ -96,12 +96,13 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   val c = p(DMAKey)
   val (noc, nocEdge) = outer.noc.out(0)
   val (dsm, dsmEdge) = outer.dsm.out(0) 
+  val dst = Wire(new TLBundle(nocEdge.bundle))
+  val src = Wire(new TLBundle(dsmEdge.bundle))
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new CSRBundle))
     val status = Decoupled(UInt(c.txnIdWidth.W))
     val error = Output(Bool())
-    val qOut = Decoupled(UInt(256.W))
   })
 
   val _dAddr = Module(new AddressGenerator).suggestName("dAddr")
@@ -113,13 +114,10 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   assert(h.src.xCnt * h.src.yCnt === h.dest.xCnt * h.dest.yCnt, 
     "Total bytes to be read is not equal to the total bytes to be written!")
   //TODO boundary compliance asserts
+  //Agent conflict asserts
+  //Address range conflict asserts
 
   val sAddrDone = RegInit(false.B)
-  when(sAddr.out.bits.last && dsm.a.fire) {//TODO isn't exhaustive
-    sAddrDone := true.B
-  } .elsewhen(io.in.ready) {
-    sAddrDone := false.B
-  }
 
   val txn  = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
   val _sCmd = Module(new Queue(new PortParam(true), 1, true, true)).suggestName("sCmd")
@@ -140,15 +138,24 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   
   dAddr.cmd <> dCmd.deq
   sAddr.cmd <> sCmd.deq
+  
+  //Mode select: DSM->NoC or NoC->DSM
+  val mode = ~RegInit(sCmd.deq.bits.nodeId === 0.U)
+  noc.a.valid := Mux(mode, dst.a.valid ,src.a.valid ) 
+  noc.a.bits  := Mux(mode, dst.a.bits  ,src.a.bits  ) 
+  noc.d.ready := Mux(mode, dst.d.ready ,src.d.ready ) 
+  dst.a.ready := Mux(mode, noc.a.ready ,dsm.a.ready ) 
+  dst.d.bits  := Mux(mode, noc.d.bits  ,dsm.d.bits  ) 
+  dst.d.valid := Mux(mode, noc.d.valid ,dsm.d.valid ) 
+  dsm.a.valid := Mux(mode, src.a.valid ,dst.a.valid )  
+  dsm.a.bits  := Mux(mode, src.a.bits  ,dst.a.bits  )  
+  dsm.d.ready := Mux(mode, src.d.ready ,dst.d.ready )  
+  src.a.ready := Mux(mode, dsm.a.ready ,noc.a.ready )  
+  src.d.bits  := Mux(mode, dsm.d.bits  ,noc.d.bits  )  
+  src.d.valid := Mux(mode, dsm.d.valid ,noc.d.valid )  
 
   val sIds = RegInit(0.U(4.W))
   val dIds = RegInit(0.U(4.W))
-  when(dsm.a.fire()) {
-    sIds := sIds+1.U
-  }
-  when(noc.a.fire() && nocEdge.last(noc.a)) {
-    dIds := dIds+1.U
-  }
 
   /* Problems faced when allowing masked transactions:
    * 1. Start address alignment and row-end-address alignment errors (TL specific)
@@ -156,34 +163,86 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
    *    destination (write) port according to the destinations mask requires complex logic
    *    to select appropriate words from the queue. */
 
-  val q = Module(new Queue(UInt((c.beatBytes*8).W), c.fifoDepth, true, true)).suggestName("q")
-  q.io.enq.valid := dsm.d.valid
-  q.io.enq.bits := dsm.d.bits.data //&& maskQ.deq.bits.groupBy(4)
-  dsm.d.ready := q.io.enq.ready
-  q.io.deq <> io.qOut
-  dsm.a.valid := sAddr.out.valid && ~sAddrDone
-  sAddr.out.ready := dsm.a.ready && ~sAddrDone
-  val get = dsmEdge.Get(
-    fromSource = sIds, 
-    toAddress = sAddr.out.bits.addr,
-    lgSize = sAddr.out.bits.size) //TODO mask?
-  /* Note:
-   * Mask for Get transactions need to be applied when storing the
-   * Get results (from dsm.a) in the mainQueue*/
-  assert(get._1, "Illegal access!")
-  dsm.a.bits := get._2
-  q.io.deq.ready := noc.a.fire() && dAddr.out.valid
-  noc.a.valid := q.io.deq.valid
-  dAddr.out.ready := noc.a.ready && q.io.deq.valid && nocEdge.last(noc.a)
-  val put = nocEdge.Put(
-    fromSource = dIds, 
-    toAddress = dAddr.out.bits.addr,
-    lgSize = dAddr.out.bits.size,
-    data = q.io.deq.bits,
-    mask = dAddr.out.bits.mask)
-  assert(put._1, "Illegal access!")
-  noc.a.bits := put._2
-  noc.d.ready := true.B//ignoring everything
+  val q = Module(new Queue(UInt((c.beatBytes*8).W), c.fifoDepth)).suggestName("q")
+
+//  when(mode) {
+    when(sAddr.out.bits.last && src.a.fire) {//TODO isn't exhaustive
+      sAddrDone := true.B
+    } .elsewhen(io.in.ready) {
+      sAddrDone := false.B
+    }
+    when(src.a.fire()) {
+      sIds := sIds+1.U
+    }
+    when(dst.a.fire() && nocEdge.last(dst.a)) {
+      dIds := dIds+1.U
+    }
+    q.io.enq.valid := src.d.valid
+    q.io.enq.bits := src.d.bits.data //&& maskQ.deq.bits.groupBy(4)
+    src.d.ready := q.io.enq.ready
+    src.a.valid := sAddr.out.valid && ~sAddrDone
+    sAddr.out.ready := src.a.ready && ~sAddrDone
+    val get = dsmEdge.Get(
+      fromSource = sIds, 
+      toAddress = sAddr.out.bits.addr,
+      lgSize = sAddr.out.bits.size) //TODO mask?
+    /* Note:
+     * Mask for Get transactions need to be applied when storing the
+     * Get results (from dsm.a) in the mainQueue*/
+    assert(get._1, "Illegal access!")
+    src.a.bits := get._2
+    q.io.deq.ready := dst.a.fire() && dAddr.out.valid
+    dst.a.valid := q.io.deq.valid
+    dAddr.out.ready := dst.a.ready && q.io.deq.valid && nocEdge.last(dst.a)
+    val put = nocEdge.Put(
+      fromSource = dIds, 
+      toAddress = dAddr.out.bits.addr,
+      lgSize = dAddr.out.bits.size,
+      data = q.io.deq.bits,
+      mask = dAddr.out.bits.mask)
+    assert(put._1, "Illegal access!")
+    dst.a.bits := put._2
+    dst.d.ready := true.B//ignoring everything
+  //} .otherwise {
+    //when(sAddr.out.bits.last && noc.a.fire) {//TODO isn't exhaustive
+    //  sAddrDone := true.B
+    //} .elsewhen(io.in.ready) {
+    //  sAddrDone := false.B
+    //}
+    //when(noc.a.fire()) {
+    //  sIds := sIds+1.U
+    //}
+    //when(dsm.a.fire() && dsmEdge.last(noc.a)) {
+    //  dIds := dIds+1.U
+    //}
+    //q.io.enq.valid := noc.d.valid
+    //q.io.enq.bits := noc.d.bits.data
+    //noc.d.ready := q.io.enq.ready
+    //noc.a.valid := sAddr.out.valid && ~sAddrDone
+    //sAddr.out.ready := noc.a.ready && ~sAddrDone
+    //val get = nocEdge.Get(
+    //  fromSource = sIds, 
+    //  toAddress = sAddr.out.bits.addr,
+    //  lgSize = sAddr.out.bits.size) //TODO mask?
+    ///* Note:
+    // * Mask for Get transactions need to be applied when storing the
+    // * Get results (from dsm.a) in the mainQueue*/
+    //assert(get._1, "Illegal access!")
+    //noc.a.bits := get._2
+    //q.io.deq.ready := dsm.a.fire() && dAddr.out.valid
+    //dsm.a.valid := q.io.deq.valid
+    //dAddr.out.ready := dsm.a.ready && q.io.deq.valid && dsmEdge.last(noc.a)
+    //val put = dsmEdge.Put(
+    //  fromSource = dIds, 
+    //  toAddress = dAddr.out.bits.addr,
+    //  lgSize = dAddr.out.bits.size,
+    //  data = q.io.deq.bits,
+    //  mask = dAddr.out.bits.mask)
+    //assert(put._1, "Illegal access!")
+    //dsm.a.bits := put._2
+    //dsm.d.ready := true.B//ignoring everything
+  //}
+
 
 //  val queue.io = Module(new Queue(UInt(c.busWidth.W), c.fifoDepth, true, true)).io
 //  val get = dsmEdge.Get(fromSource = dIds, //cmd.bits.src.nodeId, 
@@ -223,13 +282,13 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   
   /* Throw an error out based on the error signal in d channel
    * Assuming that we send out valid requests all the time*/
-  io.error := dsm.d.bits.denied || noc.d.bits.denied
+  io.error := src.d.bits.denied || dst.d.bits.denied
 
   /* Holds the latest "Put" transaction status; TODO expose it to IO somehow
    * In case something fails, we could look into this to see what error was seen
    * in the Put port. The Get port error is also similarly logged.*/
-  val debugNoC = RegInit(noc.d.bits)
-  val debugDSM = RegInit(dsm.d.bits)
+  val debugNoC = RegInit(dst.d.bits)
+  val debugDSM = RegInit(src.d.bits)
 
   /* Future work:
    * Between the queue.io and writer, and just before the reader, we could introduce
@@ -246,7 +305,7 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
    * before the queue.io from where the data is sourced is populated. 
    * But considering once the initial configuration data is downloaded from 
    * NoC to DSM, all succeeding transactions will likely be from DSM to NoC, 
-   * having this feature implemented would be sporadically advantageous.*/
+   * having this feature implemented would be intermittantly advantageous.*/
 }
 class AddrOut(implicit p: Parameters) extends Bundle {
   val c = p(DMAKey)
@@ -364,38 +423,29 @@ class AddressGenerator(implicit p: Parameters) extends Module {
     out
   }
 }
-// Given an address and size, create a mask of beatBytes size
-// eg: (0x3, 0, 4) => 0001, (0x3, 1, 4) => 0011, (0x3, 2, 4) => 1111
-// groupBy applies an interleaved OR reduction; groupBy=2 take 0010 => 01
-//object MaskGen {
-//  def apply(addr_lo: UInt, lgSize: UInt, beatBytes: Int, groupBy: Int = 1): UInt = { 
-//    require (groupBy >= 1 && beatBytes >= groupBy)
-//    require (isPow2(beatBytes) && isPow2(groupBy))
-//    val lgBytes = log2Ceil(beatBytes)
-//    val sizeOH = UIntToOH(lgSize | 0.U(log2Up(beatBytes).W), log2Up(beatBytes)) | UInt(groupBy*2 - 1)
-//
-//    def helper(i: Int): Seq[(Bool, Bool)] = { 
-//      if (i == 0) {
-//        Seq((lgSize >= UInt(lgBytes), Bool(true)))
-//      } else {
-//        val sub = helper(i-1)
-//        val size = sizeOH(lgBytes - i)
-//        val bit = addr_lo(lgBytes - i)
-//        val nbit = !bit
-//        Seq.tabulate (1 << i) { j =>
-//          val (sub_acc, sub_eq) = sub(j/2)
-//          val eq = sub_eq && (if (j % 2 == 1) bit else nbit)
-//          val acc = sub_acc || (size && eq)
-//          (acc, eq)
-//        }
-//      }
-//    }
-//
-//    if (groupBy == beatBytes) UInt(1) else
-//      Cat(helper(lgBytes-log2Ceil(groupBy)).map(_._1).reverse)
-//  }
-//}
-//
+
+class CRTemp(implicit p: Parameters) extends LazyModule {
+  //val rom = LazyModule(new TLROM(
+  //  base = 0,
+  //  size = 0x10000,
+  //  contentsDelayed = Seq.tabulate(0x10000) {i=>i.toByte},
+  //  beatBytes = 32))
+  //val ram0 = LazyModule(new ManagerTL)
+  val rom = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+    beatBytes = 32))
+  val ram = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
+    beatBytes = 32))
+
+  val dma  = LazyModule(new DMA)
+  rom.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.dsm
+  ram.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.noc
+
+  lazy val module = new LazyModuleImp(this) {
+    val io = IO(dma.module.io.cloneType)
+    io <> dma.module.io
+  }
+}
+
 //class ManagerTL(implicit p: Parameters) extends LazyModule {
 //  val device = new SimpleDevice("ManagerTL", Seq())
 //  val beatBytes = 32
@@ -474,27 +524,6 @@ class AddressGenerator(implicit p: Parameters) extends Module {
 //    }
 //  }
 //}
-
-class CRTemp(implicit p: Parameters) extends LazyModule {
-  val rom = LazyModule(new TLROM(
-    base = 0,
-    size = 0x10000,
-    contentsDelayed = Seq.tabulate(0x10000) {i=>i.toByte},
-    beatBytes = 32))
-  //val ram0 = LazyModule(new ManagerTL)
-  val ram = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
-    beatBytes = 32))
-
-  val dma  = LazyModule(new DMA)
-  rom.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.dsm
-  ram.node := TLFragmenter(32,p(DMAKey).maxBurst * 32) := dma.noc
-
-  lazy val module = new LazyModuleImp(this) {
-    val io = IO(dma.module.io.cloneType)
-    io <> dma.module.io
-  }
-}
-
 //memories
 /* Data storage: Simple Dual-Port, Synchronous Write & Synhcronous read
 *  Organization: 8 * 4096 x 32-bit module

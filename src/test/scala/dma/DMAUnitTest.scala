@@ -37,13 +37,12 @@ class TBDMATop(c:ChiselTopWrapper) extends PeekPokeTester(c) {
   poke(c.io.in.bits.src.xCnt, 0x100)
   poke(c.io.in.bits.src.yCnt, 0x4)
   poke(c.io.in.bits.dest.addr, 0)
-  poke(c.io.in.bits.dest.nodeId, 0)
+  poke(c.io.in.bits.dest.nodeId, 23)
   poke(c.io.in.bits.dest.xStep, 1)
   poke(c.io.in.bits.dest.yStep, 0x100)
   poke(c.io.in.bits.dest.xCnt, 0x100)
   poke(c.io.in.bits.dest.yCnt, 0x4)
   step(10)
-poke(c.io.in.valid, 0)
   step(500)
 }
 
