@@ -9,24 +9,47 @@ import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.diplomacy.LazyModule
 
 class TBDMATop(c:ChiselTopWrapper) extends PeekPokeTester(c) {
+  //println("Running ChiselTopWrapper!")
+  //poke(c.io.cmd.valid, 1)
+  //poke(c.io.cmd.bits.addr, 0)
+  //poke(c.io.cmd.bits.nodeId, 0)
+  //poke(c.io.cmd.bits.xStep, 1)
+  //poke(c.io.cmd.bits.yStep, 0x100)
+  //poke(c.io.cmd.bits.xCnt, 0x1B3)
+  //poke(c.io.cmd.bits.yCnt, 0x4)
+  //poke(c.io.out.ready, 1)
+  //step(1)
+  //poke(c.io.out.ready, 0)
+  //step(1)
+  //poke(c.io.out.ready, 1)
+  //step(100)
+  
   println("Running ChiselTopWrapper!")
-  poke(c.io.cmd.valid, 1)
-  poke(c.io.cmd.bits.addr, 0)
-  poke(c.io.cmd.bits.nodeId, 0)
-  poke(c.io.cmd.bits.xStep, 1)
-  poke(c.io.cmd.bits.yStep, 1)
-  poke(c.io.cmd.bits.xCnt, 0x80)
-  poke(c.io.cmd.bits.yCnt, 2)
-  step(305)
-  //using gtkwave with the .vcd file for viewing ops
+  step(5)
+  poke(c.io.in.valid, 1)
+  poke(c.io.in.bits.src.addr, 0)
+  poke(c.io.in.bits.src.nodeId, 0)
+  poke(c.io.in.bits.src.xStep, 1)
+  poke(c.io.in.bits.src.yStep, 0x100)
+  poke(c.io.in.bits.src.xCnt, 0x100)
+  poke(c.io.in.bits.src.yCnt, 0x4)
+  poke(c.io.in.bits.dest.addr, 0)
+  poke(c.io.in.bits.dest.nodeId, 0)
+  poke(c.io.in.bits.dest.xStep, 1)
+  poke(c.io.in.bits.dest.yStep, 0x100)
+  poke(c.io.in.bits.dest.xCnt, 0x100)
+  poke(c.io.in.bits.dest.yCnt, 0x4)
+  step(100)
+  
+
+
 }
 
 class ChiselTopWrapper(implicit p: Parameters) extends MultiIOModule {
-  //val top = Module(LazyModule(new CRTemp).module)
-  //val io = IO(top.io.cloneType)
-  //io <> top.io
-  //
-  val top = Module(new AddressGenerator)
+  val top = Module(LazyModule(new CRTemp).module)
   val io = IO(top.io.cloneType)
   io <> top.io
+  //val top = Module(new AddressGenerator)
+  //val io = IO(top.io.cloneType)
+  //io <> top.io
 }

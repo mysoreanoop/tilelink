@@ -30,7 +30,7 @@ case class DMAParams(
     txnIdWidth:Int = 4,
     beatBytes: Int = 32,
     maxBurst: Int = 4,
-    fifoDepth: Int = 8,
+    fifoDepth: Int = 512,
     nOutstanding: Int = 4,
     maxDMAReqs: Int = 4) {
   //derive from top config?
@@ -92,7 +92,6 @@ class DMA(implicit p: Parameters) extends LazyModule {
 
 class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   val c = p(DMAKey)
-
 //  val (noc, nocEdge) = outer.noc.out(0)
   val (dsm, dsmEdge) = outer.dsm.out(0) 
 
@@ -101,34 +100,35 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new CSRBundle))
-    val status = Decoupled(UInt(c.txnIdWidth.W))
+    //val status = Decoupled(UInt(c.txnIdWidth.W))
     val error = Output(Bool())
 //    val dOut = dAddr.out.cloneType
-    val sOut = sAddr.out.cloneType
+//    val sOut = sAddr.out.cloneType
     val qOut = Decoupled(UInt(256.W))
   })
-
-  //TODO assert if xCnt*xStep == yCnt*yStep
+  val h = io.in.bits
+  assert(h.src.xCnt * h.src.yCnt === h.dest.xCnt * h.dest.yCnt, 
+    "Total bytes to be read is not equal to the total bytes to be written!")
 
 //  io.dOut <> dAddr.out
-  io.sOut <> sAddr.out
+//  io.sOut <> sAddr.out
 
   val sCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
 //val dCmd = Module(new Queue(new PortParam(true), c.nOutstanding, true, true)).io
-  val txn = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
-  io.in.ready := sCmd.enq.ready &&txn.enq.ready
+//  val txn = Module(new Queue(UInt(c.txnIdWidth.W), c.nOutstanding, true, true)).io
+  io.in.ready := sCmd.enq.ready// & txn.enq.ready //& dCmd.enq.ready
   sCmd.enq.valid := io.in.valid
   //dCmd.enq.valid := io.in.valid
-  txn.enq.valid := io.in.valid
+//  txn.enq.valid := io.in.valid
   sCmd.enq.bits := io.in.bits.src
   //dCmd.enq.bits := io.in.bits.dest
-  txn.enq.bits := io.in.bits.txnId
+//  txn.enq.bits := io.in.bits.txnId
 
   //dAddr.cmd <> dCmd.deq
   //dAddr.out.ready := false.B
   sAddr.cmd <> sCmd.deq
-  sAddr.out.ready := false.B
-  txn.deq <> io.status
+  //sAddr.out.ready := false.B
+  //txn.deq <> io.status
 
   val sIds = RegInit(0.U(4.W))
   //val dIds = RegInit(0.U(4.W))
@@ -146,7 +146,6 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
   when(dsm.a.fire()) {
       //sAddr.out.bits.last && sAddr.out.valid) {
     sIds := sIds+1.U
-    next := true.B
     //sAddr.out.ready := true.B
   }
 //  when(noc.a.fire() && nocEdge.last(noc.a)) {
@@ -154,11 +153,12 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 //    dAddr.out.ready := true.B
 //  }
   dsm.a.valid := sAddr.out.valid
-  sAddr.out.ready := sCmd.deq.valid && ~RegNext(sCmd.deq.valid) || next
+  sAddr.out.ready := dsm.a.ready
   dsm.a.bits := dsmEdge.Get(
     fromSource = sIds, 
     toAddress = sAddr.out.bits.addr,
     lgSize = sAddr.out.bits.size)._2 //TODO ._1
+  //TODO what to do with mask?
 
 //  noc.a.valid := true.B
 //  dAddr.out.ready := dCmd.deq.valid && ~RegInit(dCmd.deq.valid)
@@ -207,8 +207,8 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
 //  }
   
   io.error := dsm.d.bits.denied
-  io.status.bits := 0.U//cmd.bits.txnId
-  io.status.valid := false.B//dAddr.last
+//  io.status.bits := 0.U//cmd.bits.txnId
+//  io.status.valid := false.B//dAddr.last
 
   //Throw an error out based on the error signal in d channel
   //io.error := false.B//Mux(cmd.bits.src.nodeId === 0.U, noc.d.bits.denied, dsm.d.bits.denied)
@@ -236,95 +236,120 @@ class DMAModule(outer: DMA) extends LazyModuleImp(outer) {
    * NoC to DSM, all succeeding transactions will likely be from DSM to NoC, 
    * having this feature implemented would be sporadically advantageous.*/
 }
+class AddrOut(implicit p: Parameters) extends Bundle {
+  val c = p(DMAKey)
+  val addr = UInt(c.addrWidth.W)
+  val size = UInt(log2Up(c.lgMaxBytes).W)
+  val mask = UInt(c.beatBytes.W)
+  val last = Bool()
+
+  override def cloneType = (new AddrOut).asInstanceOf[this.type]
+}
 
 /* Produces address to read from or write to*/
 class AddressGenerator(implicit p: Parameters) extends Module {
   val c = p(DMAKey)
   val io = IO(new Bundle {
     val cmd = Flipped(Decoupled(new PortParam(false)))
-    val out = Decoupled(new Bundle{
-      val addr = UInt(c.addrWidth.W)
-      val size = UInt(log2Up(c.lgMaxBytes).W)
-      val mask = UInt(c.beatBytes.W)
-      val last = Bool()
-    })
+    val out = Decoupled(new AddrOut)
   })
-
-  val cmd = RegInit({val n = Wire(new PortParam(false));
+  val cmd = RegInit({val n = Wire(new PortParam(false));//xStep and yStep need not be reg'd
     n := DontCare; n})
-  val mask = RegInit(0.U(c.beatBytes.W))
-  val size = RegInit(c.lgMaxBytes.U(log2Up(c.lgMaxBytes).W))
-  val last = RegInit(false.B)
+  val last = calcLast(cmd.xCnt, cmd.yCnt) & io.cmd.valid
+  val fresh = io.cmd.valid & (RegNext(last) | ~RegNext(io.cmd.valid))
 
-  val newCmd = io.cmd.valid && (RegNext(last && io.out.ready) || ~RegNext(io.cmd.valid))
-  io.cmd.ready := last && io.out.ready
+  io.cmd.ready := last & io.out.ready
   io.out.valid := io.cmd.valid
-
-  io.out.bits.last := last
+  io.out.bits.last := last 
   io.out.bits.addr := cmd.addr 
-  io.out.bits.size := size
-  io.out.bits.mask := mask
-  when(io.out.ready && ~newCmd) {
-    cmd := calculate(cmd)
-  } .elsewhen(newCmd) {
+  io.out.bits.size := calcSize(cmd.xCnt)
+  io.out.bits.mask := calcMask(cmd.xCnt)
+  when(fresh) {
+    io.out.valid := false.B
+  //  when(io.out.ready) { //TODO causes combinational loop
+      //io.out.bits.addr := io.cmd.bits.addr
+      //io.out.bits.size := calcSize(io.cmd.bits.xCnt)
+      //io.out.bits.mask := calcMask(io.cmd.bits.xCnt)
+      //io.out.bits.last := calcLast(io.cmd.bits.xCnt, io.cmd.bits.yCnt)
+      //cmd := calcAddr(io.cmd.bits)
+      //assert() TODO
+  //  } .otherwise {
+      cmd  := io.cmd.bits
+  //  }
+  } .otherwise {
     when(io.out.ready) {
-      io.out.bits.addr := io.cmd.bits.addr
-      io.out.bits.size := Mux(io.cmd.bits.xCnt >= (c.lgMaxBytes).U, 
-        (c.lgMaxBytes).U, 0.U)
-      io.out.bits.mask := Mux(io.cmd.bits.xCnt >= (c.beatBytes).U,
-        Fill(c.beatBytes, 1.U), createMask(io.cmd.bits.xCnt))
-      io.out.bits.last := Mux(io.cmd.bits.xCnt >= (c.beatBytes).U, false.B, true.B)
-      cmd := calculate(io.cmd.bits)
-    } .otherwise {
-      cmd := io.cmd.bits 
+      cmd  := calcAddr(cmd)
     }
   }
-  
-  def createMask(n: UInt): UInt = {(1.U << n) - 1.U}
-  def calculate(n:PortParam) = {
+
+  def calcSize(x: UInt): UInt = {
+    val out = Wire(UInt(c.maxWords.W))
+    when(x >= c.maxWords.U) {
+      out := c.lgMaxBytes.U
+    } .otherwise {
+      out := 0.U//means 1 beat
+    }
+    out
+  }
+  def calcMask(x: UInt): UInt = {
+    def createMask(n: UInt): UInt = {
+      //Reverse((1.U << n) - 1.U) TODO hangs!!!
+      (1.U << n) - 1.U 
+    }
+    val out = Wire(UInt(c.beatBytes.W))
+    when(x >= c.wordsPerBeat.U) {
+      out := Fill(c.beatBytes, 1.U)
+    } .otherwise {
+      out := createMask(x)
+      //^for the remaining words that cannot make up an entire beat
+    }
+    out
+  }
+  def calcLast(x: UInt, y: UInt): Bool = {
+    val out = WireInit(false.B)
+    when(y === 0.U) {
+      when(x === c.maxWords.U || x <= c.wordsPerBeat.U) {
+        out := true.B
+      }
+    }
+    out
+  }
+  def calcAddr(n:PortParam) = {
     val out = Wire(new PortParam(false))
     out := n
     when(n.xCnt > 0.U) {
       /*This exploits busWidth and burst advantages.*/
       when(n.xCnt >= c.maxWords.U) {
-        out.xCnt := n.xCnt - c.maxWords.U
-        mask := Fill(c.beatBytes, 1.U)
-        size := c.lgMaxBytes.U
-        out.addr := n.addr + c.maxBytes.U
-        when(n.xCnt - c.maxWords.U === 0.U) {
-          when(n.yCnt === 0.U) {
-            last := true.B
-          }
+        when(n.xCnt === c.maxWords.U) {
+          out.xCnt := Mux(n.yCnt > 0.U, io.cmd.bits.xCnt, 0.U)
+          out.yCnt := n.yCnt - 1.U //will be -ve during last
+          out.addr := n.addr + c.maxBytes.U + n.yStep * (c.dataWidth/8).U
+        } .otherwise {
+          out.xCnt := n.xCnt - c.maxWords.U
+          out.addr := n.addr + c.maxBytes.U
         }
-        //Assuming xStep = 1
       } .otherwise {
         /* Cut it up into as many single beats and one final masked beat
-         * Determining max possible burstSize is costly*/
-        size := 1.U
+         * Determining single max possible burstSize is costly*/
         when(n.xCnt >= c.wordsPerBeat.U) {
-          mask := Fill(c.beatBytes, 1.U)
-          out.xCnt := n.xCnt - c.wordsPerBeat.U
-          out.addr := n.addr + c.wordsPerBeat.U * (c.dataWidth/8).U
-          //if xCnt becomes zero, then it goes to the xCnt===0 loop, which is fine
+          when(n.xCnt === c.wordsPerBeat.U) {
+            out.xCnt := Mux(n.yCnt > 0.U, io.cmd.bits.xCnt, 0.U)
+            out.addr := n.addr + c.beatBytes.U + n.yStep * (c.dataWidth/8).U
+            out.yCnt := n.yCnt - 1.U
+          } .otherwise {
+            out.xCnt := n.xCnt - c.wordsPerBeat.U
+            out.addr := n.addr + c.beatBytes.U
+          }
         } .otherwise {//masked beat
-          mask := createMask(n.xCnt)
-          out.xCnt := 0.U
+          out.xCnt := Mux(n.yCnt > 0.U, io.cmd.bits.xCnt, 0.U)
           out.addr := n.addr + n.xCnt * (c.dataWidth/8).U
+          out.yCnt := n.yCnt - 1.U
         }
       }
-    } .otherwise {//.elsewhen(n.xCnt === 0.U) {
-      when(n.yCnt > 0.U) {
-        out.xCnt := io.cmd.bits.xCnt
-        out.addr := n.addr + n.yStep * (c.dataWidth/8).U
-        //yStep and yCnt can be any value
-        out.yCnt := n.yCnt - 1.U
-      } //.otherwise done
+    } .otherwise {
+      //don't come here!
     }
     out
-  }
-  when(cmd.yCnt === 0.U && cmd.xCnt === 0.U ) {
-    last := true.B
-    io.cmd.ready := true.B
   }
 }
 // Given an address and size, create a mask of beatBytes size
@@ -441,8 +466,8 @@ class AddressGenerator(implicit p: Parameters) extends Module {
 class CRTemp(implicit p: Parameters) extends LazyModule {
   val rom = LazyModule(new TLROM(
     base = 0,
-    size = 0x100,
-    contentsDelayed = Seq.tabulate(0x100) {i=>i.toByte},
+    size = 0x10000,
+    contentsDelayed = Seq.tabulate(0x10000) {i=>i.toByte},
     beatBytes = 32))
   //val ram0 = LazyModule(new ManagerTL)
   //val rom = LazyModule(new TLRAM(address=AddressSet(0, 0xffffff), 
