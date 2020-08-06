@@ -9,7 +9,7 @@ import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.diplomacy.LazyModule
 
 class TBDMATop(c:ChiselTopWrapper) extends PeekPokeTester(c) {
-//  var k = 0
+  var k = 0
 //  println("Running ChiselTopWrapper!")
 //  poke(c.io.cmd.valid, 1)
 //  poke(c.io.cmd.bits.addr, 0)
@@ -29,21 +29,26 @@ class TBDMATop(c:ChiselTopWrapper) extends PeekPokeTester(c) {
   
   println("Running ChiselTopWrapper!")
   step(5)
-  poke(c.io.in.valid, 1)
-  poke(c.io.in.bits.src.addr, 0)
-  poke(c.io.in.bits.src.nodeId, 0)
-  poke(c.io.in.bits.src.xStep, 1)
-  poke(c.io.in.bits.src.yStep, 0x100)
-  poke(c.io.in.bits.src.xCnt, 0x100)
-  poke(c.io.in.bits.src.yCnt, 0x4)
-  poke(c.io.in.bits.dest.addr, 0)
-  poke(c.io.in.bits.dest.nodeId, 23)
-  poke(c.io.in.bits.dest.xStep, 1)
-  poke(c.io.in.bits.dest.yStep, 0x100)
-  poke(c.io.in.bits.dest.xCnt, 0x100)
-  poke(c.io.in.bits.dest.yCnt, 0x4)
+  poke(c.io.cmd.src.addr, 0x100)
+  poke(c.io.cmd.src.nodeId, 0)
+  poke(c.io.cmd.src.xStep, 1)
+  poke(c.io.cmd.src.yStep, 0x100)
+  poke(c.io.cmd.src.xCnt, 0x100)
+  poke(c.io.cmd.src.yCnt, 0x4)
+  poke(c.io.cmd.dest.addr, 0x400)
+  poke(c.io.cmd.dest.nodeId, 23)
+  poke(c.io.cmd.dest.xStep, 1)
+  poke(c.io.cmd.dest.yStep, 0x100)
+  poke(c.io.cmd.dest.xCnt, 0x100)
+  poke(c.io.cmd.dest.yCnt, 0x4)
+  poke(c.io.cmd.start, 1)
+  poke(c.io.cmd.mode, 1) //DSM to NoC
+  while((peek(c.io.done) == 0) && k < 600) {
+    step(1)
+    k = k+1
+  }
+  poke(c.io.cmd.start, 0)
   step(10)
-  step(500)
 }
 
 class ChiselTopWrapper(implicit p: Parameters) extends MultiIOModule {
